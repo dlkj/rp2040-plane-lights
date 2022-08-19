@@ -4,7 +4,10 @@
 #![no_std]
 #![no_main]
 
-use bsp::entry;
+use bsp::{
+    entry,
+    hal::{prelude::_rphal_pio_PIOExt, Timer},
+};
 use defmt::*;
 use defmt_rtt as _;
 use embedded_hal::digital::v2::OutputPin;
@@ -22,6 +25,8 @@ use bsp::hal::{
     sio::Sio,
     watchdog::Watchdog,
 };
+use smart_leds::{brightness, SmartLedsWrite, RGB8};
+use ws2812_pio::Ws2812;
 
 #[entry]
 fn main() -> ! {
@@ -47,6 +52,8 @@ fn main() -> ! {
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
 
+    let timer = Timer::new(pac.TIMER, &mut pac.RESETS);
+
     let pins = bsp::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -54,14 +61,33 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
+    let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
+
+    // Instanciate a Ws2812 LED strip:
+    let mut ws = Ws2812::new(
+        // Use pin 6 on the Raspberry Pi Pico (which is GPIO4 of the rp2040 chip)
+        // for the LED data output:
+        pins.gpio0.into_mode(),
+        &mut pio,
+        sm0,
+        clocks.peripheral_clock.freq(),
+        timer.count_down(),
+    );
+    let leds: [RGB8; 16] = [(255, 255, 255).into(); 16];
+
     let mut led_pin = pins.led.into_push_pull_output();
 
     loop {
         info!("on!");
         led_pin.set_high().unwrap();
+        ws.write(brightness(leds.iter().copied(), 16u8)).unwrap();
+
         delay.delay_ms(500);
+
         info!("off!");
         led_pin.set_low().unwrap();
+        ws.write(brightness(leds.iter().copied(), 0u8)).unwrap();
+
         delay.delay_ms(500);
     }
 }
