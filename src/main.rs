@@ -1,31 +1,23 @@
-//! Blinks the LED on a Pico board
-//!
-//! This will blink an LED attached to GP25, which is the pin the Pico uses for the on-board LED.
 #![no_std]
 #![no_main]
 
-use bsp::{
-    entry,
-    hal::{prelude::_rphal_pio_PIOExt, Timer},
-};
+use bsp::entry;
+use bsp::hal;
 use defmt::*;
 use defmt_rtt as _;
 use embedded_hal::digital::v2::OutputPin;
 use embedded_time::fixed_point::FixedPoint;
+use hal::{prelude::_rphal_pio_PIOExt, Timer};
 use panic_probe as _;
-
-// Provide an alias for our BSP so we can switch targets quickly.
-// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
 use rp_pico as bsp;
-// use sparkfun_pro_micro_rp2040 as bsp;
 
-use bsp::hal::{
+use hal::{
     clocks::{init_clocks_and_plls, Clock},
     pac,
     sio::Sio,
     watchdog::Watchdog,
 };
-use smart_leds::{brightness, SmartLedsWrite, RGB8};
+use smart_leds::{SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812;
 
 #[entry]
@@ -73,23 +65,85 @@ fn main() -> ! {
         clocks.peripheral_clock.freq(),
         timer.count_down(),
     );
-    let leds: [RGB8; 16] = [(255, 255, 255).into(); 16];
+
+    const PORT_FORWARD: usize = 12;
+    const PORT_REAR: usize = 11;
+    const STARBOARD_FORWARD: usize = 4;
+    const STARBOARD_REAR: usize = 5;
+
+    const TAIL: usize = 8;
+    const BEACON: usize = 6;
+
+    let mut leds: [RGB8; 16] = [
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+        (0, 0, 0).into(),
+    ];
 
     let mut led_pin = pins.led.into_push_pull_output();
 
     loop {
-        info!("on!");
         led_pin.set_high().unwrap();
-        ws.write(brightness(leds.iter().copied(), 16u8)).unwrap();
 
-        delay.delay_ms(500);
+        leds[PORT_FORWARD] = (255, 0, 0).into();
+        leds[PORT_REAR] = (64, 64, 64).into();
+        leds[STARBOARD_FORWARD] = (0, 255, 0).into();
+        leds[STARBOARD_REAR] = (64, 64, 64).into();
+        leds[TAIL] = (64, 64, 64).into();
+        ws.write(leds.iter().copied()).unwrap();
 
-        info!("off!");
+        delay.delay_ms(300);
+
+        leds[BEACON] = (255, 0, 0).into();
+        ws.write(leds.iter().copied()).unwrap();
+
+        delay.delay_ms(300);
+
+        leds[BEACON] = (0, 0, 0).into();
+        ws.write(leds.iter().copied()).unwrap();
+
+        delay.delay_ms(300);
+
         led_pin.set_low().unwrap();
-        ws.write(brightness(leds.iter().copied(), 0u8)).unwrap();
 
-        delay.delay_ms(500);
+        leds[PORT_FORWARD] = (255, 255, 255).into();
+        leds[PORT_REAR] = (255, 255, 255).into();
+        leds[STARBOARD_FORWARD] = (255, 255, 255).into();
+        leds[STARBOARD_REAR] = (255, 255, 255).into();
+        leds[TAIL] = (255, 255, 255).into();
+        ws.write(leds.iter().copied()).unwrap();
+
+        delay.delay_ms(33);
+
+        leds[PORT_FORWARD] = (255, 0, 0).into();
+        leds[PORT_REAR] = (64, 64, 64).into();
+        leds[STARBOARD_FORWARD] = (0, 255, 0).into();
+        leds[STARBOARD_REAR] = (64, 64, 64).into();
+        leds[TAIL] = (64, 64, 64).into();
+        ws.write(leds.iter().copied()).unwrap();
+
+        delay.delay_ms(33);
+
+        leds[PORT_FORWARD] = (255, 255, 255).into();
+        leds[PORT_REAR] = (255, 255, 255).into();
+        leds[STARBOARD_FORWARD] = (255, 255, 255).into();
+        leds[STARBOARD_REAR] = (255, 255, 255).into();
+        leds[TAIL] = (255, 255, 255).into();
+        ws.write(leds.iter().copied()).unwrap();
+
+        delay.delay_ms(33);
     }
 }
-
-// End of file
