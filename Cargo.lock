@@ -128,6 +128,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "critical-section"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6548a0ad5d2549e111e1f6a11a6c2e2d00ce6a3dafe22948d67c2b443f775e52"
+
+[[package]]
 name = "debug-helper"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -164,11 +170,11 @@ checksum = "0db23d29972d99baa3de2ee2ae3f104c10564a6d05a346eb3f4c4f2c0525a06e"
 
 [[package]]
 name = "defmt-rtt"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d2cbbbd58847d508d97629b32cd9730a2d28532f71e219714614406029f18b1"
+checksum = "609923761264dd99ed9c7d209718cda4631c5fe84668e0f0960124cbb844c49f"
 dependencies = [
- "critical-section",
+ "critical-section 1.1.1",
  "defmt",
 ]
 
@@ -477,7 +483,7 @@ checksum = "0de1bc8bf092f5da649a417ad9f18c9705b6226afe3521a469f15d1d2bcb7f66"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
- "critical-section",
+ "critical-section 0.2.7",
  "embedded-hal",
  "embedded-time",
  "itertools",
