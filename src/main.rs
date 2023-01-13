@@ -6,7 +6,6 @@ use bsp::hal;
 use defmt::*;
 use defmt_rtt as _;
 use embedded_hal::digital::v2::OutputPin;
-use embedded_time::fixed_point::FixedPoint;
 use hal::{
     clocks::{init_clocks_and_plls, Clock},
     pac,
@@ -39,7 +38,7 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
+    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     let timer = Timer::new(pac.TIMER, &mut pac.RESETS);
 
