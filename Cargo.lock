@@ -712,6 +712,7 @@ dependencies = [
  "defmt",
  "defmt-rtt",
  "embedded-hal",
+ "fugit",
  "panic-probe",
  "pio",
  "pio-proc",

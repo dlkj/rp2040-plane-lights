@@ -18,6 +18,7 @@ smart-leds = "0.3"
 ws2812-pio = { git = "https://github.com/dlkj/ws2812-pio-rs.git", branch = "rp2040-hal-dev" }
 pio-proc = "0.2"
 pio = "0.2"
+fugit = "0.3"
 
 # cargo build/run
 [profile.dev]
