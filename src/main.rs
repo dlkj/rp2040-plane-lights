@@ -18,7 +18,7 @@ use hal::{
 };
 use panic_probe as _;
 use rp_pico as bsp;
-use rp_pico::hal::dma::single_buffer;
+use rp_pico::hal::dma::double_buffer;
 use rp_pico::hal::Clock;
 
 type LedPin = hal::gpio::bank0::Gpio0;
@@ -54,21 +54,10 @@ fn main() -> ! {
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
-    let mut data = [0; 145];
+    const LENGTH: usize = 145;
 
-    for (i, x) in [
-        0x0f000000, 0x080f0000, 0x08000f00, 0x0f080000, 0x000f0000, 0x00080f00, 0x0f000800,
-        0x000f0800, 0x00000f00,
-    ]
-    .into_iter()
-    .cycle()
-    .take(data.len() - 1)
-    .enumerate()
-    {
-        data[i + 1] = x;
-    }
-
-    data[0] = 144 * 28u32;
+    let mut data = [0; LENGTH];
+    data[0] = ((data.len() as u32 - 1) * 24) - 1;
 
     #[rustfmt::skip]
     let program = pio_proc::pio_asm!(
@@ -117,13 +106,37 @@ fn main() -> ! {
 
     let dma = pac.DMA.split(&mut pac.RESETS);
     let ch0 = dma.ch0;
+    let ch1 = dma.ch1;
 
-    let tx_buf = singleton!(TX_BUFFER_1: [u32; 145] = data).unwrap();
+    let tx_buf1 = singleton!(TX_BUFFER_1: [u32; LENGTH] = data).unwrap();
+    let tx_buf2 = singleton!(TX_BUFFER_2: [u32; LENGTH] = data).unwrap();
 
-    let tx_transfer = single_buffer::Config::new(ch0, tx_buf, tx).start();
-    let (ch0, tx_buf, tx) = tx_transfer.wait();
-    let tx_transfer = single_buffer::Config::new(ch0, tx_buf, tx).start();
-    let (_ch0, _tx_buf, _tx) = tx_transfer.wait();
+    let tx_transfer = double_buffer::Config::new((ch0, ch1), tx_buf1, tx).start();
+    let mut tx_transfer = tx_transfer.read_next(tx_buf2);
 
-    loop {}
+    let mut offset = 0;
+
+    loop {
+        let (tx_buf, next_tx_transfer) = tx_transfer.wait();
+
+        for (i, x) in [0x0f000000 >> (8 * offset)]
+            .into_iter()
+            .cycle()
+            // .skip(offset)
+            .take(tx_buf.len())
+            .enumerate()
+        {
+            tx_buf[i] = x;
+        }
+
+        tx_buf[0] = ((tx_buf.len() as u32 - 1) * 24) - 1;
+
+        offset = (offset + 1) % 3;
+
+        tx_transfer = next_tx_transfer.read_next(tx_buf);
+
+        // if offset == 0 {
+        //     loop {}
+        // }
+    }
 }
