@@ -114,29 +114,98 @@ fn main() -> ! {
     let tx_transfer = double_buffer::Config::new((ch0, ch1), tx_buf1, tx).start();
     let mut tx_transfer = tx_transfer.read_next(tx_buf2);
 
-    let mut offset = 0;
+    let mut t = 0.0;
+    let sin = hal::rom_data::float_funcs::fsin::ptr();
 
     loop {
         let (tx_buf, next_tx_transfer) = tx_transfer.wait();
 
-        for (i, x) in [0x0f000000 >> (8 * offset)]
-            .into_iter()
-            .cycle()
-            // .skip(offset)
-            .take(tx_buf.len())
-            .enumerate()
-        {
-            tx_buf[i] = x;
+        for (i, led) in tx_buf.iter_mut().skip(1).enumerate() {
+            let hue_offs = (i as f32) / (2 * LENGTH) as f32;
+
+            let sin_11 = sin((t + hue_offs) * 2.0 * core::f32::consts::PI);
+            // Bring -1..1 sine range to 0..1 range:
+            let sin_01 = (sin_11 + 1.0) * 0.5;
+
+            let hue = 360.0 * sin_01;
+            let sat = 1.0;
+            let val = 1.0;
+
+            let (r, g, b) = brightness(64, gamma(hsv2rgb_u8(hue, sat, val)));
+            let rgb = u32::from(g) << 24 | u32::from(r) << 16 | u32::from(b) << 8;
+            *led = rgb;
         }
 
         tx_buf[0] = ((tx_buf.len() as u32 - 1) * 24) - 1;
 
-        offset = (offset + 1) % 3;
+        t += 1.0 / 2000.0;
+        while t > 1.0 {
+            t -= 1.0;
+        }
 
         tx_transfer = next_tx_transfer.read_next(tx_buf);
-
-        // if offset == 0 {
-        //     loop {}
-        // }
     }
+}
+
+pub fn hsv2rgb(hue: f32, sat: f32, val: f32) -> (f32, f32, f32) {
+    let c = val * sat;
+    let v = (hue / 60.0) % 2.0 - 1.0;
+    let v = if v < 0.0 { -v } else { v };
+    let x = c * (1.0 - v);
+    let m = val - c;
+    let (r, g, b) = if hue < 60.0 {
+        (c, x, 0.0)
+    } else if hue < 120.0 {
+        (x, c, 0.0)
+    } else if hue < 180.0 {
+        (0.0, c, x)
+    } else if hue < 240.0 {
+        (0.0, x, c)
+    } else if hue < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    (r + m, g + m, b + m)
+}
+
+pub fn hsv2rgb_u8(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let r = hsv2rgb(h, s, v);
+
+    (
+        (r.0 * 255.0) as u8,
+        (r.1 * 255.0) as u8,
+        (r.2 * 255.0) as u8,
+    )
+}
+
+fn brightness(brightness: u8, (r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    (
+        (r as u16 * (brightness as u16 + 1) / 256) as u8,
+        (g as u16 * (brightness as u16 + 1) / 256) as u8,
+        (b as u16 * (brightness as u16 + 1) / 256) as u8,
+    )
+}
+
+fn gamma((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    // This table remaps linear input values
+    // (the numbers we’d like to use; e.g. 127 = half brightness)
+    // to nonlinear gamma-corrected output values
+    // (numbers producing the desired effect on the LED;
+    // e.g. 36 = half brightness).
+    const GAMMA8: [u8; 256] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4,
+        4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10, 10, 10, 11, 11, 11, 12, 12,
+        13, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 24,
+        24, 25, 25, 26, 27, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36, 37, 38, 39, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+        64, 66, 67, 68, 69, 70, 72, 73, 74, 75, 77, 78, 79, 81, 82, 83, 85, 86, 87, 89, 90, 92, 93,
+        95, 96, 98, 99, 101, 102, 104, 105, 107, 109, 110, 112, 114, 115, 117, 119, 120, 122, 124,
+        126, 127, 129, 131, 133, 135, 137, 138, 140, 142, 144, 146, 148, 150, 152, 154, 156, 158,
+        160, 162, 164, 167, 169, 171, 173, 175, 177, 180, 182, 184, 186, 189, 191, 193, 196, 198,
+        200, 203, 205, 208, 210, 213, 215, 218, 220, 223, 225, 228, 231, 233, 236, 239, 241, 244,
+        247, 249, 252, 255,
+    ];
+    (GAMMA8[r as usize], GAMMA8[g as usize], GAMMA8[b as usize])
 }
