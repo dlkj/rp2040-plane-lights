@@ -10,10 +10,8 @@ mod app {
 
     use bsp::{hal, XOSC_CRYSTAL_FREQ};
     use defmt::info;
-    use embedded_hal::digital::v2::OutputPin;
-    use embedded_hal::digital::v2::ToggleableOutputPin;
+    use embedded_hal::PwmPin;
     use hal::{clocks::init_clocks_and_plls, sio::Sio, watchdog::Watchdog};
-    use rp2040_monotonic::ExtU64;
     use rp2040_monotonic::Rp2040Monotonic;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
@@ -23,9 +21,7 @@ mod app {
     struct Shared {}
 
     #[local]
-    struct Local {
-        led: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio25, hal::gpio::PushPullOutput>,
-    }
+    struct Local {}
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
@@ -56,20 +52,30 @@ mod app {
             sio.gpio_bank0,
             &mut resets,
         );
-        let mut led = pins.led.into_push_pull_output();
-        led.set_low().unwrap();
+
+        let mut pwm_slices = hal::pwm::Slices::new(cx.device.PWM, &mut resets);
+
+        let led_pwm = &mut pwm_slices.pwm4;
+        led_pwm.set_div_int(0);
+        led_pwm.enable();
+
+        let led_channel = &mut led_pwm.channel_b;
+        led_channel.output_to(pins.led);
+        led_channel.set_duty(led_channel.get_max_duty() / 16);
+
+        led_pwm.enable_interrupt();
 
         let mono = Rp2040Monotonic::new(cx.device.TIMER);
 
-        blink::spawn().unwrap();
+        unsafe {
+            hal::pac::NVIC::unmask(hal::pac::Interrupt::PWM_IRQ_WRAP);
+        }
 
-        (Shared {}, Local { led }, init::Monotonics(mono))
+        (Shared {}, Local {}, init::Monotonics(mono))
     }
 
-    #[task(local = [led])]
-    fn blink(cx: blink::Context) {
-        cx.local.led.toggle().unwrap();
-        info!("BLINK!");
-        blink::spawn_after(1.secs()).unwrap();
+    #[task(binds = PWM_IRQ_WRAP)]
+    fn pwm_wrap_irq(_cx: pwm_wrap_irq::Context) {
+        info!("PWM WRAP");
     }
 }
