@@ -1,143 +1,75 @@
 #![no_std]
 #![no_main]
 
-use bsp::entry;
-use bsp::hal;
-use defmt::*;
 use defmt_rtt as _;
-use embedded_hal::digital::v2::OutputPin;
-use hal::{
-    clocks::{init_clocks_and_plls, Clock},
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
-};
-use hal::{prelude::_rphal_pio_PIOExt, Timer};
 use panic_probe as _;
-use rp_pico as bsp;
-use smart_leds::{SmartLedsWrite, RGB8};
-use ws2812_pio::Ws2812;
 
-#[entry]
-fn main() -> ! {
-    info!("Program start");
-    let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let sio = Sio::new(pac.SIO);
+#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [XIP_IRQ])]
+mod app {
+    use rp_pico as bsp;
 
-    let clocks = init_clocks_and_plls(
-        bsp::XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
+    use bsp::{hal, XOSC_CRYSTAL_FREQ};
+    use defmt::info;
+    use embedded_hal::digital::v2::OutputPin;
+    use embedded_hal::digital::v2::ToggleableOutputPin;
+    use hal::{clocks::init_clocks_and_plls, sio::Sio, watchdog::Watchdog};
+    use rp2040_monotonic::ExtU64;
+    use rp2040_monotonic::Rp2040Monotonic;
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    #[monotonic(binds = TIMER_IRQ_0, default = true)]
+    type AppMonotonic = Rp2040Monotonic;
 
-    let timer = Timer::new(pac.TIMER, &mut pac.RESETS);
+    #[shared]
+    struct Shared {}
 
-    let pins = bsp::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
+    #[local]
+    struct Local {
+        led: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio25, hal::gpio::PushPullOutput>,
+    }
 
-    let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
+    #[init]
+    fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
+        // Soft-reset does not release the hardware spinlocks
+        // Release them now to avoid a deadlock after debug or watchdog reset
+        unsafe {
+            hal::sio::spinlock_reset();
+        }
 
-    // Instanciate a Ws2812 LED strip:
-    let mut ws = Ws2812::new(
-        pins.gpio0.into_mode(),
-        &mut pio,
-        sm0,
-        clocks.peripheral_clock.freq(),
-        timer.count_down(),
-    );
+        let mut resets = cx.device.RESETS;
+        let mut watchdog = Watchdog::new(cx.device.WATCHDOG);
+        init_clocks_and_plls(
+            XOSC_CRYSTAL_FREQ,
+            cx.device.XOSC,
+            cx.device.CLOCKS,
+            cx.device.PLL_SYS,
+            cx.device.PLL_USB,
+            &mut resets,
+            &mut watchdog,
+        )
+        .ok()
+        .unwrap();
 
-    const PORT_FORWARD: usize = 12;
-    const PORT_REAR: usize = 11;
-    const STARBOARD_FORWARD: usize = 4;
-    const STARBOARD_REAR: usize = 5;
+        let sio = Sio::new(cx.device.SIO);
+        let pins = rp_pico::Pins::new(
+            cx.device.IO_BANK0,
+            cx.device.PADS_BANK0,
+            sio.gpio_bank0,
+            &mut resets,
+        );
+        let mut led = pins.led.into_push_pull_output();
+        led.set_low().unwrap();
 
-    const TAIL: usize = 8;
-    const BEACON: usize = 6;
+        let mono = Rp2040Monotonic::new(cx.device.TIMER);
 
-    let mut leds: [RGB8; 16] = [
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-        (0, 0, 0).into(),
-    ];
+        blink::spawn().unwrap();
 
-    let mut led_pin = pins.led.into_push_pull_output();
+        (Shared {}, Local { led }, init::Monotonics(mono))
+    }
 
-    loop {
-        led_pin.set_high().unwrap();
-
-        leds[PORT_FORWARD] = (255, 0, 0).into();
-        leds[PORT_REAR] = (64, 64, 64).into();
-        leds[STARBOARD_FORWARD] = (0, 255, 0).into();
-        leds[STARBOARD_REAR] = (64, 64, 64).into();
-        leds[TAIL] = (64, 64, 64).into();
-        ws.write(leds.iter().copied()).unwrap();
-
-        delay.delay_ms(300);
-
-        leds[BEACON] = (255, 0, 0).into();
-        ws.write(leds.iter().copied()).unwrap();
-
-        delay.delay_ms(300);
-
-        leds[BEACON] = (0, 0, 0).into();
-        ws.write(leds.iter().copied()).unwrap();
-
-        delay.delay_ms(300);
-
-        led_pin.set_low().unwrap();
-
-        leds[PORT_FORWARD] = (255, 255, 255).into();
-        leds[PORT_REAR] = (255, 255, 255).into();
-        leds[STARBOARD_FORWARD] = (255, 255, 255).into();
-        leds[STARBOARD_REAR] = (255, 255, 255).into();
-        leds[TAIL] = (255, 255, 255).into();
-        ws.write(leds.iter().copied()).unwrap();
-
-        delay.delay_ms(33);
-
-        leds[PORT_FORWARD] = (255, 0, 0).into();
-        leds[PORT_REAR] = (64, 64, 64).into();
-        leds[STARBOARD_FORWARD] = (0, 255, 0).into();
-        leds[STARBOARD_REAR] = (64, 64, 64).into();
-        leds[TAIL] = (64, 64, 64).into();
-        ws.write(leds.iter().copied()).unwrap();
-
-        delay.delay_ms(33);
-
-        leds[PORT_FORWARD] = (255, 255, 255).into();
-        leds[PORT_REAR] = (255, 255, 255).into();
-        leds[STARBOARD_FORWARD] = (255, 255, 255).into();
-        leds[STARBOARD_REAR] = (255, 255, 255).into();
-        leds[TAIL] = (255, 255, 255).into();
-        ws.write(leds.iter().copied()).unwrap();
-
-        delay.delay_ms(33);
+    #[task(local = [led])]
+    fn blink(cx: blink::Context) {
+        cx.local.led.toggle().unwrap();
+        info!("BLINK!");
+        blink::spawn_after(1.secs()).unwrap();
     }
 }

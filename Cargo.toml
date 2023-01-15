@@ -16,6 +16,8 @@ rp-pico = "0.6"
 
 smart-leds = "0.3"
 ws2812-pio = "0.5"
+rp2040-monotonic = "1.2"
+cortex-m-rtic = "1.1"
 
 # cargo build/run
 [profile.dev]
