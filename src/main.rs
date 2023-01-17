@@ -13,6 +13,10 @@ mod app {
     use embedded_hal::PwmPin;
     use hal::{clocks::init_clocks_and_plls, sio::Sio, watchdog::Watchdog};
     use rp2040_monotonic::Rp2040Monotonic;
+    use rp_pico::hal::gpio::bank0::Gpio1;
+    use rp_pico::hal::gpio::Interrupt::EdgeLow;
+    use rp_pico::hal::gpio::{FunctionPwm, Pin, PullUpDisabled};
+    use rp_pico::hal::pwm::{InputHighRunning, Pwm0, Slice};
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
     type AppMonotonic = Rp2040Monotonic;
@@ -21,7 +25,10 @@ mod app {
     struct Shared {}
 
     #[local]
-    struct Local {}
+    struct Local {
+        pwm: Slice<Pwm0, InputHighRunning>,
+        pin: Pin<Gpio1, FunctionPwm>,
+    }
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
@@ -53,29 +60,35 @@ mod app {
             &mut resets,
         );
 
-        let mut pwm_slices = hal::pwm::Slices::new(cx.device.PWM, &mut resets);
+        pins.gpio1.set_interrupt_enabled(EdgeLow, true);
+        let pwm_slices = hal::pwm::Slices::new(cx.device.PWM, &mut resets);
 
-        let led_pwm = &mut pwm_slices.pwm4;
-        led_pwm.set_div_int(0);
-        led_pwm.enable();
+        let mut pwm: Slice<_, InputHighRunning> = pwm_slices.pwm0.into_mode();
+        pwm.set_div_int(125); // 1us pwm slice clock
+        pwm.enable();
 
-        let led_channel = &mut led_pwm.channel_b;
-        led_channel.output_to(pins.led);
-        led_channel.set_duty(led_channel.get_max_duty() / 16);
-
-        led_pwm.enable_interrupt();
+        let channel = &mut pwm.channel_b;
+        let pin: Pin<_, PullUpDisabled> = channel.input_from(pins.gpio1).into_mode();
+        let pin: Pin<_, FunctionPwm> = pin.into_mode();
+        channel.enable();
 
         let mono = Rp2040Monotonic::new(cx.device.TIMER);
 
         unsafe {
-            hal::pac::NVIC::unmask(hal::pac::Interrupt::PWM_IRQ_WRAP);
+            hal::pac::NVIC::unmask(hal::pac::Interrupt::IO_IRQ_BANK0);
         }
 
-        (Shared {}, Local {}, init::Monotonics(mono))
+        (Shared {}, Local { pwm, pin }, init::Monotonics(mono))
     }
 
-    #[task(binds = PWM_IRQ_WRAP)]
-    fn pwm_wrap_irq(_cx: pwm_wrap_irq::Context) {
-        info!("PWM WRAP");
+    #[task(binds = IO_IRQ_BANK0, local = [pwm, pin])]
+    fn io_irq_bank0(cx: io_irq_bank0::Context) {
+        let width = cx.local.pwm.get_counter();
+        cx.local.pwm.set_counter(0);
+        if width > 50 {
+            info!("pulse: {}us", width);
+        }
+        cx.local.pin.clear_interrupt(EdgeLow);
+        //expect 1000-2000 us, centred around 1500 us at 50hz
     }
 }
