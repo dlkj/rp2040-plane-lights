@@ -4,30 +4,39 @@
 use defmt_rtt as _;
 use panic_probe as _;
 
-#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [XIP_IRQ])]
+#[rtic::app(device = pac, peripherals = true, dispatchers = [XIP_IRQ])]
 mod app {
-    use rp_pico as bsp;
-
     use bsp::{hal, XOSC_CRYSTAL_FREQ};
-    use defmt::info;
     use embedded_hal::PwmPin;
-    use hal::{clocks::init_clocks_and_plls, sio::Sio, watchdog::Watchdog};
+    use hal::{
+        clocks::init_clocks_and_plls,
+        gpio::{bank0::Gpio0, bank0::Gpio1, FunctionPwm, Interrupt::EdgeLow, Pin, PullUpDisabled},
+        pac,
+        pio::{self, PIOExt},
+        pwm::{InputHighRunning, Pwm0, Slice},
+        sio::Sio,
+        watchdog::Watchdog,
+        Clock,
+    };
+    use rp2040_monotonic::fugit::{ExtU64, TimerInstantU64};
     use rp2040_monotonic::Rp2040Monotonic;
-    use rp_pico::hal::gpio::bank0::Gpio1;
-    use rp_pico::hal::gpio::Interrupt::EdgeLow;
-    use rp_pico::hal::gpio::{FunctionPwm, Pin, PullUpDisabled};
-    use rp_pico::hal::pwm::{InputHighRunning, Pwm0, Slice};
+    use rp_pico as bsp;
+    use smart_leds::{SmartLedsWrite, RGB8};
+    use ws2812_pio::Ws2812Direct;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
     type AppMonotonic = Rp2040Monotonic;
 
     #[shared]
-    struct Shared {}
+    struct Shared {
+        pwm_value: Option<u16>,
+    }
 
     #[local]
     struct Local {
         pwm: Slice<Pwm0, InputHighRunning>,
         pin: Pin<Gpio1, FunctionPwm>,
+        ws: Ws2812Direct<pac::PIO0, pio::SM0, Gpio0>,
     }
 
     #[init]
@@ -40,7 +49,7 @@ mod app {
 
         let mut resets = cx.device.RESETS;
         let mut watchdog = Watchdog::new(cx.device.WATCHDOG);
-        init_clocks_and_plls(
+        let clocks = init_clocks_and_plls(
             XOSC_CRYSTAL_FREQ,
             cx.device.XOSC,
             cx.device.CLOCKS,
@@ -72,23 +81,54 @@ mod app {
         let pin: Pin<_, FunctionPwm> = pin.into_mode();
         channel.enable();
 
+        let (mut pio, sm0, _, _, _) = cx.device.PIO0.split(&mut resets);
+
+        let ws = Ws2812Direct::new(
+            pins.gpio0.into_mode(),
+            &mut pio,
+            sm0,
+            clocks.peripheral_clock.freq(),
+        );
+
         let mono = Rp2040Monotonic::new(cx.device.TIMER);
 
         unsafe {
-            hal::pac::NVIC::unmask(hal::pac::Interrupt::IO_IRQ_BANK0);
+            pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0);
         }
 
-        (Shared {}, Local { pwm, pin }, init::Monotonics(mono))
+        write_led::spawn().unwrap();
+
+        (
+            Shared { pwm_value: None },
+            Local { pwm, pin, ws },
+            init::Monotonics(mono),
+        )
     }
 
-    #[task(binds = IO_IRQ_BANK0, local = [pwm, pin])]
-    fn io_irq_bank0(cx: io_irq_bank0::Context) {
+    #[task(
+        binds = IO_IRQ_BANK0,
+        shared = [pwm_value],
+        local = [pwm, pin]
+    )]
+    fn io_irq_bank0(mut cx: io_irq_bank0::Context) {
         let width = cx.local.pwm.get_counter();
         cx.local.pwm.set_counter(0);
-        if width > 50 {
-            info!("pulse: {}us", width);
-        }
+        cx.shared.pwm_value.lock(|p| *p.insert(width));
         cx.local.pin.clear_interrupt(EdgeLow);
-        //expect 1000-2000 us, centred around 1500 us at 50hz
+    }
+
+    #[task(
+        shared = [pwm_value],
+        local = [ws]
+    )]
+    fn write_led(mut cx: write_led::Context) {
+        let pwm_value: Option<u16> = cx.shared.pwm_value.lock(|p| p.clone());
+        let now: TimerInstantU64<1_000_000> = monotonics::now();
+
+        let color: RGB8 = (255, 0, 255).into();
+        cx.local.ws.write([color].into_iter()).unwrap();
+
+        let next = 60.millis();
+        write_led::spawn_after(next).unwrap();
     }
 }
