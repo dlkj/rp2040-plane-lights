@@ -6,8 +6,12 @@ use panic_probe as _;
 
 #[rtic::app(device = pac, peripherals = true, dispatchers = [XIP_IRQ])]
 mod app {
+    const LED_COUNT: usize = 144;
+
     use bsp::{hal, XOSC_CRYSTAL_FREQ};
+    use core::iter::{repeat, zip};
     use embedded_hal::PwmPin;
+    use hal::rom_data::float_funcs::fsin;
     use hal::{
         clocks::init_clocks_and_plls,
         gpio::{bank0::Gpio0, bank0::Gpio1, FunctionPwm, Interrupt::EdgeLow, Pin, PullUpDisabled},
@@ -18,10 +22,11 @@ mod app {
         watchdog::Watchdog,
         Clock,
     };
+    use itertools::unfold;
     use rp2040_monotonic::fugit::{ExtU64, TimerInstantU64};
     use rp2040_monotonic::Rp2040Monotonic;
     use rp_pico as bsp;
-    use smart_leds::{SmartLedsWrite, RGB8};
+    use smart_leds::{brightness, SmartLedsWrite};
     use ws2812_pio::Ws2812Direct;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
@@ -29,7 +34,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        pwm_value: Option<u16>,
+        pwm_value: u16,
     }
 
     #[local]
@@ -99,7 +104,7 @@ mod app {
         write_led::spawn().unwrap();
 
         (
-            Shared { pwm_value: None },
+            Shared { pwm_value: 0 },
             Local { pwm, pin, ws },
             init::Monotonics(mono),
         )
@@ -113,7 +118,7 @@ mod app {
     fn io_irq_bank0(mut cx: io_irq_bank0::Context) {
         let width = cx.local.pwm.get_counter();
         cx.local.pwm.set_counter(0);
-        cx.shared.pwm_value.lock(|p| *p.insert(width));
+        cx.shared.pwm_value.lock(|p| *p = width);
         cx.local.pin.clear_interrupt(EdgeLow);
     }
 
@@ -122,13 +127,87 @@ mod app {
         local = [ws]
     )]
     fn write_led(mut cx: write_led::Context) {
-        let pwm_value: Option<u16> = cx.shared.pwm_value.lock(|p| p.clone());
+        let pwm_value: u16 = cx.shared.pwm_value.lock(|p| *p);
         let now: TimerInstantU64<1_000_000> = monotonics::now();
+        let now = (now.ticks() & u64::from(u32::MAX)) as f32 / 1_000_000.0;
 
-        let color: RGB8 = (255, 0, 255).into();
-        cx.local.ws.write([color].into_iter()).unwrap();
+        let start = (now / 10.0) % 1.0;
+        const STEP: f32 = 0.5 / LED_COUNT as f32;
+
+        let nav = repeat(Some((64, 0, 0).into()))
+            .take(4)
+            .chain(repeat(None).take(LED_COUNT / 2 - 6))
+            .chain(
+                repeat(if now % 1.0 < 0.333 {
+                    Some((255, 0, 0).into())
+                } else {
+                    None
+                })
+                .take(4),
+            )
+            .chain(repeat(None).take(LED_COUNT / 2 - 6))
+            .chain(repeat(Some((0, 64, 0).into())));
+
+        let spectrum_iter = unfold(start, |t| {
+            let colour = spectrum(*t);
+            *t += STEP;
+            while *t > 1.0 {
+                *t -= 1.0;
+            }
+            Some(colour.into())
+        });
+
+        if pwm_value > 1700 && pwm_value < 2200 {
+            let mux = zip(nav, brightness(spectrum_iter, 32)).map(|(a, b)| a.unwrap_or(b));
+            cx.local.ws.write(mux.take(LED_COUNT)).unwrap();
+        } else {
+            cx.local
+                .ws
+                .write(nav.map(|x| x.unwrap_or_default()).take(LED_COUNT))
+                .unwrap();
+        }
 
         let next = 60.millis();
         write_led::spawn_after(next).unwrap();
+    }
+
+    fn spectrum(offset: f32) -> (u8, u8, u8) {
+        let sin_11 = fsin(offset * 2.0 * core::f32::consts::PI);
+        // Bring -1..1 sine range to 0..1 range:
+        let sin_01 = (sin_11 + 1.0) * 0.5;
+
+        hsv2rgb_u8(360.0 * sin_01, 1.0, 1.0)
+    }
+
+    fn hsv2rgb(hue: f32, sat: f32, val: f32) -> (f32, f32, f32) {
+        let c = val * sat;
+        let v = (hue / 60.0) % 2.0 - 1.0;
+        let v = if v < 0.0 { -v } else { v };
+        let x = c * (1.0 - v);
+        let m = val - c;
+        let (r, g, b) = if hue < 60.0 {
+            (c, x, 0.0)
+        } else if hue < 120.0 {
+            (x, c, 0.0)
+        } else if hue < 180.0 {
+            (0.0, c, x)
+        } else if hue < 240.0 {
+            (0.0, x, c)
+        } else if hue < 300.0 {
+            (x, 0.0, c)
+        } else {
+            (c, 0.0, x)
+        };
+        (r + m, g + m, b + m)
+    }
+
+    fn hsv2rgb_u8(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+        let r = hsv2rgb(h, s, v);
+
+        (
+            (r.0 * 255.0) as u8,
+            (r.1 * 255.0) as u8,
+            (r.2 * 255.0) as u8,
+        )
     }
 }
