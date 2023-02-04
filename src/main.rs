@@ -187,24 +187,21 @@ mod app {
         } else {
             cx.local
                 .ws_body
-                .write(
-                    zip(body_nav(now), spectrum_iter.clone()).map(|(a, b)| a.unwrap_or(b.into())),
-                )
+                .write(zip(body_nav(now), spectrum_iter.clone()).map(|(a, b)| a.unwrap_or(b)))
                 .unwrap();
 
             cx.local
                 .ws_left
                 .write(
                     zip(wing_nav(now, WingSide::Left), spectrum_iter.clone())
-                        .map(|(a, b)| a.unwrap_or(b.into())),
+                        .map(|(a, b)| a.unwrap_or(b)),
                 )
                 .unwrap();
 
             cx.local
                 .ws_right
                 .write(
-                    zip(wing_nav(now, WingSide::Right), spectrum_iter)
-                        .map(|(a, b)| a.unwrap_or(b.into())),
+                    zip(wing_nav(now, WingSide::Right), spectrum_iter).map(|(a, b)| a.unwrap_or(b)),
                 )
                 .unwrap();
         }
@@ -224,8 +221,8 @@ mod app {
                 WingSide::Right => (0, 64, 0),
             }
         };
-        let body_nav = repeat_n(None, WING_LEN - 6).chain(repeat_n(Some(nav_colour), 6));
-        body_nav
+
+        repeat_n(None, WING_LEN - 6).chain(repeat_n(Some(nav_colour), 6))
     }
 
     fn body_nav(now: f32) -> impl Iterator<Item = Option<(u8, u8, u8)>> {
@@ -242,11 +239,11 @@ mod app {
         } else {
             (64, 64, 64)
         };
-        let body_nav = repeat_n(None, 2)
+
+        repeat_n(None, 2)
             .chain(once(beacon_color))
             .chain(repeat_n(None, BODY_LEN - 4))
-            .chain(once(Some(nav_colour)));
-        body_nav
+            .chain(once(Some(nav_colour)))
     }
 
     fn spectrum(offset: f32) -> (u8, u8, u8) {
