@@ -6,27 +6,31 @@ use panic_probe as _;
 
 #[rtic::app(device = pac, peripherals = true, dispatchers = [XIP_IRQ])]
 mod app {
-    const LED_COUNT: usize = 144;
+    const WING_LEN: usize = 17;
+    const BODY_LEN: usize = 15;
 
     use bsp::{hal, XOSC_CRYSTAL_FREQ};
-    use core::iter::{repeat, zip};
+    use core::iter::{once, zip};
     use embedded_hal::PwmPin;
     use hal::rom_data::float_funcs::fsin;
     use hal::{
         clocks::init_clocks_and_plls,
-        gpio::{bank0::Gpio0, bank0::Gpio1, FunctionPwm, Interrupt::EdgeLow, Pin, PullUpDisabled},
+        gpio::{
+            bank0::Gpio16, bank0::Gpio17, bank0::Gpio18, bank0::Gpio27, FunctionPwm,
+            Interrupt::EdgeLow, Pin, PullUpDisabled,
+        },
         pac,
         pio::{self, PIOExt},
-        pwm::{InputHighRunning, Pwm0, Slice},
+        pwm::{InputHighRunning, Pwm5, Slice},
         sio::Sio,
         watchdog::Watchdog,
         Clock,
     };
-    use itertools::unfold;
+    use itertools::{repeat_n, unfold};
     use rp2040_monotonic::fugit::{ExtU64, TimerInstantU64};
     use rp2040_monotonic::Rp2040Monotonic;
     use rp_pico as bsp;
-    use smart_leds::{brightness, SmartLedsWrite};
+    use smart_leds::SmartLedsWrite;
     use ws2812_pio::Ws2812Direct;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
@@ -39,9 +43,11 @@ mod app {
 
     #[local]
     struct Local {
-        pwm: Slice<Pwm0, InputHighRunning>,
-        pin: Pin<Gpio1, FunctionPwm>,
-        ws: Ws2812Direct<pac::PIO0, pio::SM0, Gpio0>,
+        pwm: Slice<Pwm5, InputHighRunning>,
+        pin: Pin<Gpio27, FunctionPwm>,
+        ws_body: Ws2812Direct<pac::PIO0, pio::SM0, Gpio16>,
+        ws_left: Ws2812Direct<pac::PIO0, pio::SM1, Gpio17>,
+        ws_right: Ws2812Direct<pac::PIO0, pio::SM2, Gpio18>,
     }
 
     #[init]
@@ -74,24 +80,38 @@ mod app {
             &mut resets,
         );
 
-        pins.gpio1.set_interrupt_enabled(EdgeLow, true);
+        pins.gpio27.set_interrupt_enabled(EdgeLow, true);
         let pwm_slices = hal::pwm::Slices::new(cx.device.PWM, &mut resets);
 
-        let mut pwm: Slice<_, InputHighRunning> = pwm_slices.pwm0.into_mode();
+        let mut pwm: Slice<_, InputHighRunning> = pwm_slices.pwm5.into_mode();
         pwm.set_div_int(125); // 1us pwm slice clock
         pwm.enable();
 
         let channel = &mut pwm.channel_b;
-        let pin: Pin<_, PullUpDisabled> = channel.input_from(pins.gpio1).into_mode();
+        let pin: Pin<_, PullUpDisabled> = channel.input_from(pins.gpio27).into_mode();
         let pin: Pin<_, FunctionPwm> = pin.into_mode();
         channel.enable();
 
-        let (mut pio, sm0, _, _, _) = cx.device.PIO0.split(&mut resets);
+        let (mut pio0, sm0, sm1, sm2, _) = cx.device.PIO0.split(&mut resets);
 
-        let ws = Ws2812Direct::new(
-            pins.gpio0.into_mode(),
-            &mut pio,
+        let ws_body = Ws2812Direct::new(
+            pins.gpio16.into_mode(),
+            &mut pio0,
             sm0,
+            clocks.peripheral_clock.freq(),
+        );
+
+        let ws_left = Ws2812Direct::new(
+            pins.gpio17.into_mode(),
+            &mut pio0,
+            sm1,
+            clocks.peripheral_clock.freq(),
+        );
+
+        let ws_right = Ws2812Direct::new(
+            pins.gpio18.into_mode(),
+            &mut pio0,
+            sm2,
             clocks.peripheral_clock.freq(),
         );
 
@@ -105,7 +125,13 @@ mod app {
 
         (
             Shared { pwm_value: 0 },
-            Local { pwm, pin, ws },
+            Local {
+                pwm,
+                pin,
+                ws_body,
+                ws_left,
+                ws_right,
+            },
             init::Monotonics(mono),
         )
     }
@@ -124,7 +150,7 @@ mod app {
 
     #[task(
         shared = [pwm_value],
-        local = [ws]
+        local = [ws_body, ws_left, ws_right]
     )]
     fn write_led(mut cx: write_led::Context) {
         let pwm_value: u16 = cx.shared.pwm_value.lock(|p| *p);
@@ -132,21 +158,7 @@ mod app {
         let now = (now.ticks() & u64::from(u32::MAX)) as f32 / 1_000_000.0;
 
         let start = (now / 10.0) % 1.0;
-        const STEP: f32 = 0.5 / LED_COUNT as f32;
-
-        let nav = repeat(Some((64, 0, 0).into()))
-            .take(4)
-            .chain(repeat(None).take(LED_COUNT / 2 - 6))
-            .chain(
-                repeat(if now % 1.0 < 0.333 {
-                    Some((255, 0, 0).into())
-                } else {
-                    None
-                })
-                .take(4),
-            )
-            .chain(repeat(None).take(LED_COUNT / 2 - 6))
-            .chain(repeat(Some((0, 64, 0).into())));
+        const STEP: f32 = 0.5 / BODY_LEN as f32;
 
         let spectrum_iter = unfold(start, |t| {
             let colour = spectrum(*t);
@@ -154,21 +166,87 @@ mod app {
             while *t > 1.0 {
                 *t -= 1.0;
             }
-            Some(colour.into())
+            Some::<(u8, u8, u8)>(colour)
         });
 
-        if pwm_value > 1700 && pwm_value < 2200 {
-            let mux = zip(nav, brightness(spectrum_iter, 32)).map(|(a, b)| a.unwrap_or(b));
-            cx.local.ws.write(mux.take(LED_COUNT)).unwrap();
+        if (1700..2200).contains(&pwm_value) {
+            cx.local
+                .ws_body
+                .write(body_nav(now).map(|x| x.unwrap_or_default()))
+                .unwrap();
+
+            cx.local
+                .ws_left
+                .write(wing_nav(now, WingSide::Left).map(|x| x.unwrap_or_default()))
+                .unwrap();
+
+            cx.local
+                .ws_right
+                .write(wing_nav(now, WingSide::Right).map(|x| x.unwrap_or_default()))
+                .unwrap();
         } else {
             cx.local
-                .ws
-                .write(nav.map(|x| x.unwrap_or_default()).take(LED_COUNT))
+                .ws_body
+                .write(
+                    zip(body_nav(now), spectrum_iter.clone()).map(|(a, b)| a.unwrap_or(b.into())),
+                )
+                .unwrap();
+
+            cx.local
+                .ws_left
+                .write(
+                    zip(wing_nav(now, WingSide::Left), spectrum_iter.clone())
+                        .map(|(a, b)| a.unwrap_or(b.into())),
+                )
+                .unwrap();
+
+            cx.local
+                .ws_right
+                .write(
+                    zip(wing_nav(now, WingSide::Right), spectrum_iter)
+                        .map(|(a, b)| a.unwrap_or(b.into())),
+                )
                 .unwrap();
         }
 
-        let next = 60.millis();
+        let next = 1.millis();
         write_led::spawn_after(next).unwrap();
+    }
+
+    fn wing_nav(now: f32, side: WingSide) -> impl Iterator<Item = Option<(u8, u8, u8)>> {
+        let sec_frac = now % 1.0;
+
+        let nav_colour = if (0.0..0.033).contains(&sec_frac) || (0.066..0.099).contains(&sec_frac) {
+            (255, 255, 255)
+        } else {
+            match side {
+                WingSide::Left => (64, 0, 0),
+                WingSide::Right => (0, 64, 0),
+            }
+        };
+        let body_nav = repeat_n(None, WING_LEN - 6).chain(repeat_n(Some(nav_colour), 6));
+        body_nav
+    }
+
+    fn body_nav(now: f32) -> impl Iterator<Item = Option<(u8, u8, u8)>> {
+        let sec_frac = now % 1.0;
+
+        let beacon_color = if (0.4..0.5).contains(&sec_frac) {
+            Some((255, 0, 0))
+        } else {
+            None
+        };
+
+        let nav_colour = if (0.0..0.033).contains(&sec_frac) || (0.066..0.099).contains(&sec_frac) {
+            (255, 255, 255)
+        } else {
+            (64, 64, 64)
+        };
+        let body_nav = repeat_n(None, 2)
+            .chain(once(beacon_color))
+            .chain(repeat_n(None, BODY_LEN - 4))
+            .chain(once(Some(nav_colour)));
+        body_nav
     }
 
     fn spectrum(offset: f32) -> (u8, u8, u8) {
@@ -209,5 +287,10 @@ mod app {
             (r.1 * 255.0) as u8,
             (r.2 * 255.0) as u8,
         )
+    }
+
+    enum WingSide {
+        Left,
+        Right,
     }
 }
