@@ -16,7 +16,7 @@ defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 smart-leds = "0.3"
-ws2812-pio = "0.5"
+ws2812-pio = "0.6"
 itertools = { version = "0.10", default-features = false }
 
 # cargo build/run
