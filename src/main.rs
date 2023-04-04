@@ -157,14 +157,23 @@ mod app {
         let now: TimerInstantU64<1_000_000> = monotonics::now();
         let now = (now.ticks() & u64::from(u32::MAX)) as f32 / 1_000_000.0;
 
-        let start = (now / 10.0) % 1.0;
-        const STEP: f32 = 0.5 / BODY_LEN as f32;
+        let start = (now / 20.0) % 1.0;
+        const STEP: f32 = 0.1 / BODY_LEN as f32;
 
-        let spectrum_iter = unfold(start, |t| {
+        let spectrum_iter_right = unfold(start, |t| {
             let colour = spectrum(*t);
             *t += STEP;
             while *t > 1.0 {
                 *t -= 1.0;
+            }
+            Some::<(u8, u8, u8)>(colour)
+        });
+
+        let spectrum_iter_left = unfold(start, |t| {
+            let colour = spectrum(*t);
+            *t -= STEP;
+            while *t < 0.0 {
+                *t += 1.0;
             }
             Some::<(u8, u8, u8)>(colour)
         });
@@ -187,21 +196,22 @@ mod app {
         } else {
             cx.local
                 .ws_body
-                .write(zip(body_nav(now), spectrum_iter.clone()).map(|(a, b)| a.unwrap_or(b)))
+                .write(zip(body_nav(now), spectrum_iter_left.clone()).map(|(a, b)| a.apply(b)))
                 .unwrap();
 
             cx.local
                 .ws_left
                 .write(
-                    zip(wing_nav(now, WingSide::Left), spectrum_iter.clone())
-                        .map(|(a, b)| a.unwrap_or(b)),
+                    zip(wing_nav(now, WingSide::Left), spectrum_iter_left.clone())
+                        .map(|(a, b)| a.apply(b)),
                 )
                 .unwrap();
 
             cx.local
                 .ws_right
                 .write(
-                    zip(wing_nav(now, WingSide::Right), spectrum_iter).map(|(a, b)| a.unwrap_or(b)),
+                    zip(wing_nav(now, WingSide::Right), spectrum_iter_right)
+                        .map(|(a, b)| a.apply(b)),
                 )
                 .unwrap();
         }
@@ -210,7 +220,7 @@ mod app {
         write_led::spawn_after(next).unwrap();
     }
 
-    fn wing_nav(now: f32, side: WingSide) -> impl Iterator<Item = Option<(u8, u8, u8)>> {
+    fn wing_nav(now: f32, side: WingSide) -> impl Iterator<Item = Overlay> {
         let sec_frac = now % 1.0;
 
         let nav_colour = if (0.0..0.033).contains(&sec_frac) || (0.066..0.099).contains(&sec_frac) {
@@ -222,16 +232,18 @@ mod app {
             }
         };
 
-        repeat_n(None, WING_LEN - 6).chain(repeat_n(Some(nav_colour), 6))
+        repeat_n(Overlay::Transparent, WING_LEN - 6)
+            .chain(repeat_n(Overlay::Brightness(16), 4))
+            .chain(repeat_n(Overlay::Colour(nav_colour), 2))
     }
 
-    fn body_nav(now: f32) -> impl Iterator<Item = Option<(u8, u8, u8)>> {
+    fn body_nav(now: f32) -> impl Iterator<Item = Overlay> {
         let sec_frac = now % 1.0;
 
-        let beacon_color = if (0.4..0.5).contains(&sec_frac) {
-            Some((255, 0, 0))
+        let beacon_color = if (0.35..0.65).contains(&sec_frac) {
+            Overlay::Colour((255, 0, 0))
         } else {
-            None
+            Overlay::Transparent
         };
 
         let nav_colour = if (0.0..0.033).contains(&sec_frac) || (0.066..0.099).contains(&sec_frac) {
@@ -240,10 +252,10 @@ mod app {
             (64, 64, 64)
         };
 
-        repeat_n(None, 2)
+        repeat_n(Overlay::Transparent, 2)
             .chain(once(beacon_color))
-            .chain(repeat_n(None, BODY_LEN - 4))
-            .chain(once(Some(nav_colour)))
+            .chain(repeat_n(Overlay::Transparent, BODY_LEN - 4))
+            .chain(once(Overlay::Colour(nav_colour)))
     }
 
     fn spectrum(offset: f32) -> (u8, u8, u8) {
@@ -289,5 +301,37 @@ mod app {
     enum WingSide {
         Left,
         Right,
+    }
+
+    #[derive(Clone)]
+    enum Overlay {
+        Transparent,
+        Colour((u8, u8, u8)),
+        Brightness(u8),
+    }
+
+    impl Overlay {
+        pub fn unwrap_or_default(self) -> (u8, u8, u8) {
+            match self {
+                Self::Colour(c) => c,
+                _ => (0, 0, 0),
+            }
+        }
+
+        pub fn apply(self, c: (u8, u8, u8)) -> (u8, u8, u8) {
+            match self {
+                Self::Colour(c) => c,
+                Self::Transparent => c,
+                Self::Brightness(b) => brightness(c, b),
+            }
+        }
+    }
+
+    fn brightness((r, g, b): (u8, u8, u8), brightness: u8) -> (u8, u8, u8) {
+        (
+            (r as u16 * (brightness as u16 + 1) / 256) as u8,
+            (g as u16 * (brightness as u16 + 1) / 256) as u8,
+            (b as u16 * (brightness as u16 + 1) / 256) as u8,
+        )
     }
 }
